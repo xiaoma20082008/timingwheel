@@ -40,7 +40,7 @@ type hierarchicalTimer struct {
 	started chan bool
 	closed  chan bool
 	counter uint64
-	queue   []*hierarchicalBucket
+	queue   *hierarchicalBucketList
 	lock    sync.Mutex
 }
 
@@ -123,6 +123,7 @@ func (timer *hierarchicalTimer) advance(timeoutMs uint64) bool {
 func newTimer(option *TimerOption) *hierarchicalTimer {
 	timer := new(hierarchicalTimer)
 	timer.wheel = *newWheel(option.TickMs, int(option.WheelSize), uint64(time.Now().UnixMilli()))
+	timer.queue = newHierarchicalBucketList()
 	timer.fireMs = option.TimeoutMs
 	timer.started = make(chan bool)
 	timer.closed = make(chan bool)

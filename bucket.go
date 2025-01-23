@@ -59,6 +59,7 @@ func (bl hierarchicalBuckets) pop(timeoutMs uint64) *hierarchicalBucket {
 	return nil
 }
 
+// hierarchicalBucketList wrap for []*hierarchicalBucket
 type hierarchicalBucketList struct {
 	expireMs uint64
 	lock     sync.Mutex
@@ -87,11 +88,7 @@ func (bl *hierarchicalBucketList) Pop() any {
 	for bl.list.Len() == 0 {
 		bl.cond.Wait()
 	}
-	return heap.Pop(bl).(any)
-}
-
-func newHierarchicalBucketList() *hierarchicalBucketList {
-	return nil
+	return bl.pop(0)
 }
 
 func (bl *hierarchicalBucketList) pop(timeoutMs uint64) *hierarchicalBucket {
@@ -108,6 +105,15 @@ func (bl *hierarchicalBucketList) pop(timeoutMs uint64) *hierarchicalBucket {
 		bucket = heap.Pop(bl).(*hierarchicalBucket)
 	}
 	return bucket
+}
+
+func newHierarchicalBucketList() *hierarchicalBucketList {
+	list := new(hierarchicalBucketList)
+	list.lock = sync.Mutex{}
+	list.cond = sync.NewCond(&list.lock)
+	list.expireMs = 0
+	list.list = make(hierarchicalBuckets, 0)
+	return list
 }
 
 func newBucket() *hierarchicalBucket {

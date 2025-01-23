@@ -113,7 +113,7 @@ func (timeout *hierarchicalTimeout) ExpireMs() uint64 {
 }
 
 func (timeout *hierarchicalTimeout) String() string {
-	deadline := timeout.expireMs - uint64(time.Now().UnixMilli())
+	deadline := int64(timeout.expireMs - uint64(time.Now().UnixMilli()))
 	b := strings.Builder{}
 	b.WriteString("Timeout(deadline: ")
 	if deadline < 0 {
