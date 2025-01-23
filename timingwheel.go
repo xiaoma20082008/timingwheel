@@ -1,53 +1,35 @@
-package github.com/xiaoma20082008/timingwheel
+//
+// File: timingwheel.go
+// Project: timingwheel
+// File Created: 2025-01-23
+// Author: xiaoma20082008 (mmccxx2519@gmail.com)
+//
+// ------------------------------------------------------------------------
+// Last Modified At: 2025-01-24 00:03:51
+// Last Modified By: xiaoma20082008 (mmccxx2519@gmail.com>)
+// ------------------------------------------------------------------------
+//
+// Copyright (C) xiaoma20082008. All rights reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+
+package timingwheel
 
 import (
+	"container/heap"
 	"sync"
-	"time"
 )
-
-//==================================== apis ====================================
-
-type TimerTask func(timeout Timeout)
-
-type Timer interface {
-	New(task TimerTask, delayMs uint64) Timeout
-	Shutdown() []Timeout
-}
-
-type Timeout interface {
-	Timer() Timer
-	Task() TimerTask
-	IsExpired() bool
-	IsCancelled() bool
-	Cancel() bool
-	Expire() bool
-}
-
-func NewTimer() Timer {
-	timer := new(hierarchicalTimer)
-	timer.wheel = *newWheel(1, 1000, uint64(time.Now().UnixMilli()))
-	timer.fireMs = 100
-	timer.started = make(chan bool)
-	timer.closed = make(chan bool)
-	return timer
-}
-
-//================================= implements =================================
-
-var counter int
-var lock sync.Mutex
-
-func inc() {
-	lock.Lock()
-	defer lock.Unlock()
-	counter++
-}
-
-func dec() {
-	lock.Lock()
-	defer lock.Unlock()
-	counter--
-}
 
 type timingWheel struct {
 	lock      sync.Mutex
@@ -55,8 +37,9 @@ type timingWheel struct {
 	size      int
 	currentMs uint64
 	interval  uint64
-	buckets   buckets
+	buckets   hierarchicalBuckets
 	overflow  *timingWheel
+	queue     hierarchicalBuckets
 }
 
 func (wheel *timingWheel) add(timeout *hierarchicalTimeout) bool {
@@ -73,6 +56,9 @@ func (wheel *timingWheel) add(timeout *hierarchicalTimeout) bool {
 		bid := vid % uint64(wheel.size)
 		bucket := wheel.buckets[bid]
 		bucket.add(timeout)
+		if bucket.expire(vid * wheel.tickMs) {
+			wheel.queue.Push(bucket)
+		}
 		return true
 	} else {
 		// Out of the interval. Put it into the parent timer
@@ -84,9 +70,18 @@ func (wheel *timingWheel) add(timeout *hierarchicalTimeout) bool {
 }
 
 func (wheel *timingWheel) addWheel() {
-	lock.Lock()
-	defer lock.Unlock()
+	wheel.lock.Lock()
+	defer wheel.lock.Unlock()
 	wheel.overflow = newWheel(wheel.tickMs, wheel.size, wheel.currentMs)
+}
+
+func (wheel *timingWheel) advance(timeoutMs uint64) {
+	if timeoutMs >= wheel.currentMs+wheel.tickMs {
+		wheel.currentMs = timeoutMs - (timeoutMs % wheel.tickMs)
+		if wheel.overflow != nil {
+			wheel.overflow.advance(timeoutMs)
+		}
+	}
 }
 
 func newWheel(tickMs uint64, wheelSize int, startMs uint64) *timingWheel {
@@ -95,125 +90,11 @@ func newWheel(tickMs uint64, wheelSize int, startMs uint64) *timingWheel {
 	wheel.size = wheelSize
 	wheel.currentMs = startMs - (startMs % tickMs)
 	wheel.interval = tickMs * uint64(wheelSize)
-	wheel.buckets = make(buckets, wheelSize)
+	wheel.buckets = make([]*hierarchicalBucket, wheelSize)
+	wheel.queue = make([]*hierarchicalBucket, 0)
+	heap.Init(wheel.queue)
 	for i := 0; i < wheelSize; i++ {
 		wheel.buckets[i] = newBucket()
 	}
 	return wheel
-}
-
-type hierarchicalTimer struct {
-	Timer
-	wheel   timingWheel
-	startMs uint64
-	fireMs  uint64
-	started chan bool
-	closed  chan bool
-}
-
-func (timer *hierarchicalTimer) New(fn TimerTask, delayMs uint64) Timeout {
-	timer.Startup()
-	timeout := newTimeout(timer, fn, uint64(time.Now().UnixMilli())+delayMs)
-	if !timer.wheel.add(timeout) && !timeout.IsCancelled() {
-		go fn(timeout)
-	}
-	return timeout
-}
-
-func (timer *hierarchicalTimer) Shutdown() []Timeout {
-	timer.closed <- true
-	return nil
-}
-
-func (timer *hierarchicalTimer) Startup() {
-	go timer.Loop()
-	<-timer.started
-}
-
-func (timer *hierarchicalTimer) Loop() {
-	timer.startMs = uint64(time.Now().UnixMilli())
-	timer.started <- true
-LOOP:
-	for {
-		select {
-		case v := <-timer.closed:
-			if v {
-				break LOOP
-			}
-		default:
-			timer.Advance(timer.fireMs)
-		}
-	}
-}
-
-func (timer *hierarchicalTimer) Advance(timeoutMs uint64) {
-}
-
-type buckets []*hierarchicalTimeoutBucket
-
-type hierarchicalTimeoutBucket struct {
-	root *hierarchicalTimeoutBucket
-}
-
-func newBucket() *hierarchicalTimeoutBucket {
-	return nil
-}
-
-func (bucket *hierarchicalTimeoutBucket) add(timeout *hierarchicalTimeout) {}
-
-func (bucket *hierarchicalTimeoutBucket) del(timeout *hierarchicalTimeout) {}
-
-const (
-	st_INIT      = 0
-	st_EXPIRED   = 1
-	st_CANCELLED = 2
-)
-
-type hierarchicalTimeout struct {
-	Timeout
-	timer    *hierarchicalTimer
-	task     TimerTask
-	expireMs uint64
-	state    int
-	lock     sync.Mutex
-}
-
-func newTimeout(timer *hierarchicalTimer, fn TimerTask, expireMs uint64) *hierarchicalTimeout {
-	timeout := new(hierarchicalTimeout)
-	timeout.timer = timer
-	timeout.expireMs = expireMs
-	timeout.task = fn
-	timeout.state = st_INIT
-	return timeout
-}
-
-func (timeout *hierarchicalTimeout) Timer() Timer { return timeout.timer }
-
-func (timeout *hierarchicalTimeout) Task() TimerTask { return timeout.task }
-
-func (timeout *hierarchicalTimeout) IsExpired() bool {
-	timeout.lock.Lock()
-	defer timeout.lock.Unlock()
-	return timeout.state == st_EXPIRED
-}
-
-func (timeout *hierarchicalTimeout) IsCancelled() bool {
-	timeout.lock.Lock()
-	defer timeout.lock.Unlock()
-	return timeout.state == st_CANCELLED
-}
-
-func (timeout *hierarchicalTimeout) Cancel() bool {
-	timeout.lock.Lock()
-	defer timeout.lock.Unlock()
-	timeout.state = st_CANCELLED
-	return true
-}
-
-func (timeout *hierarchicalTimeout) Expire() bool {
-	timeout.lock.Lock()
-	defer timeout.lock.Unlock()
-	timeout.state = st_EXPIRED
-	timeout.task(timeout)
-	return true
 }
